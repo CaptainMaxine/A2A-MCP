@@ -8,34 +8,24 @@ from agents.base_agent import A2AMessage
 
 
 class A2ACoordinator:
-    """
-    Main controller that routes messages between agents and logs the steps.
-    """
-
     def __init__(self):
         self.mcp = MCPClient()
 
-        # Instantiate agents
+        # Initialize agents
         self.router = RouterAgent()
-        self.customer_data = CustomerDataAgent(self.mcp)
-        self.support = SupportAgent(self.mcp)
+        self.customer_data_agent = CustomerDataAgent(self.mcp)
+        self.support_agent = SupportAgent(self.mcp)
 
         # Agent registry
         self.agents = {
             "router": self.router,
-            "customer_data": self.customer_data,
-            "support": self.support
+            "customer_data": self.customer_data_agent,
+            "support": self.support_agent,
         }
 
     def run(self, query: str):
-        """
-        Run a single user query through the A2A system.
-        """
-        print("\n==============================")
-        print(f"USER QUERY: {query}")
-        print("==============================\n")
-
-        # Initial message to RouterAgent
+        """Runs a single end-to-end A2A workflow."""
+        log = []
         message = A2AMessage(
             sender="user",
             receiver="router",
@@ -43,58 +33,71 @@ class A2ACoordinator:
             state={}
         )
 
-        steps = 0
-        max_steps = 20
+        for step in range(15):
+            log.append(
+                f"[STEP {step+1}] {message.sender} → {message.receiver} | content={message.content} | state={message.state}"
+            )
 
-        while steps < max_steps:
-            steps += 1
-
-            print(f"[STEP {steps}] {message.sender} → {message.receiver}")
-            print(f"  Content: {message.content}")
-            print(f"  State: {message.state}\n")
+            # Final answer returned to user
+            if message.receiver == "user":
+                return message.content, log
 
             receiver = message.receiver
 
-            # If message goes back to user → finished
-            if receiver == "user":
-                print("=== FINAL ANSWER ===")
-                print(message.content)
-                print("====================\n")
-                return message.content
-
-            # Safety check
+            # Validate receiver
             if receiver not in self.agents:
-                raise ValueError(f"Unknown receiver agent: {receiver}")
+                return f"ERROR: Unknown receiver '{receiver}'", log
 
-            # Call the appropriate agent
             agent = self.agents[receiver]
             message = agent.handle(message)
 
-        raise RuntimeError("A2A exceeded maximum steps (possible infinite loop).")
+        return "ERROR: Max steps exceeded", log
 
 
-# -------------------------
-# Built-in scenarios
-# -------------------------
+def run_demo():
+    """Runs all required assignment scenarios."""
 
-def demo_scenarios():
-    coord = A2ACoordinator()
+    coordinator = A2ACoordinator()
 
-    queries = [
+    scenarios = [
+        # Scenario 1
         "I need help with my account, customer ID 12345",
+
+        # Scenario 2
         "I want to cancel my subscription but I'm having billing issues",
+
+        # Scenario 3
         "What's the status of all high-priority tickets for premium customers?",
+
+        # Simple Query
         "Get customer information for ID 5",
+
+        # Coordinated Query
         "I'm customer 12345 and need help upgrading my account",
+
+        # Complex Query
         "Show me all active customers who have open tickets",
+
+        # Escalation
         "I've been charged twice, please refund immediately!",
-        "Update my email to new@email.com and show my ticket history"
+
+        # Multi-intent
+        "Update my email to new@email.com and show my ticket history",
     ]
 
-    for q in queries:
-        coord.run(q)
+    for q in scenarios:
+        print("\n" + "=" * 80)
+        print(f"QUERY: {q}")
+        print("=" * 80)
+
+        response, log = coordinator.run(q)
+
+        for line in log:
+            print(line)
+
+        print("\nFINAL RESPONSE:", response)
+        print("\n" + "-" * 80)
 
 
-# When running via: python -m agents.coordinator
 if __name__ == "__main__":
-    demo_scenarios()
+    run_demo()
