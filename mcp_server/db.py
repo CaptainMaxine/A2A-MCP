@@ -4,7 +4,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-DB_PATH = Path(__file__).with_name("support.db")
+DB_PATH = Path(__file__).parent / "support.db"
 
 
 @contextmanager
