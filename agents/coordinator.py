@@ -29,6 +29,7 @@ class A2ACoordinator:
         message = A2AMessage(
             sender="user",
             receiver="router",
+            role="user",
             content=query,
             state={}
         )
