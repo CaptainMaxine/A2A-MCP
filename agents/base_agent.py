@@ -1,38 +1,23 @@
 # agents/base_agent.py
 from dataclasses import dataclass, field
-from typing import Any, Dict, Literal
-
-Role = Literal["user", "system", "agent"]
-
+from typing import Any, Dict
 
 @dataclass
 class A2AMessage:
-    """
-    Generic message passed between agents.
-
-    - sender: name of the agent or "user"
-    - receiver: target agent name or "user"
-    - role: semantic role (user/system/agent)
-    - content: natural language content
-    - state: shared structured state between agents
-    """
-    sender: str
-    receiver: str
-    role: Role
-    content: str
+    sender: str          # agent name or "user"
+    receiver: str        # target agent name or "user"
+    role: str            # "user", "system", or "agent"
+    content: str         # free text query or instruction
     state: Dict[str, Any] = field(default_factory=dict)
 
-
 class BaseAgent:
-    """Base class for all agents."""
-
-    def __init__(self, name: str):
+    def __init__(self, name: str, mcp_client=None):
         self.name = name
+        self.mcp = mcp_client
 
     def handle(self, message: A2AMessage) -> A2AMessage:
         """
-        Process an incoming message and return a new message.
-
-        Subclasses must override this method.
+        Must be implemented by RouterAgent / CustomerDataAgent / SupportAgent.
+        Returns a new A2AMessage.
         """
         raise NotImplementedError
