@@ -1,109 +1,100 @@
 # agents/coordinator.py
 
-from typing import Dict, List, Tuple
-from .base_agent import A2AMessage
-from .router_agent import RouterAgent
-from .customer_data_agent import CustomerDataAgent
-from .support_agent import SupportAgent
+from agents.router_agent import RouterAgent
+from agents.customer_data_agent import CustomerDataAgent
+from agents.support_agent import SupportAgent
+from agents.mcp_client import MCPClient
+from agents.base_agent import A2AMessage
 
 
 class A2ACoordinator:
     """
-    Orchestrates the A2A loop:
-    - Holds router, customer_data, support agents
-    - Runs multi-step message passing
-    - Handles Scenario 2 special behavior:
-        SupportAgent needs billing context ->
-        Router sets flag -> Coordinator fetches via MCP ->
-        State enriched -> Resume to SupportAgent
+    Main controller that routes messages between agents and logs the steps.
     """
 
-    def __init__(self, mcp_client):
+    def __init__(self):
+        self.mcp = MCPClient()
+
+        # Instantiate agents
         self.router = RouterAgent()
-        self.customer_data = CustomerDataAgent(mcp_client)
-        self.support = SupportAgent(mcp_client)
+        self.customer_data = CustomerDataAgent(self.mcp)
+        self.support = SupportAgent(self.mcp)
+
+        # Agent registry
         self.agents = {
             "router": self.router,
             "customer_data": self.customer_data,
-            "support": self.support,
+            "support": self.support
         }
-        self.mcp = mcp_client
 
-    # -------------------------------------------------------------
-    # Core run loop
-    # -------------------------------------------------------------
-    def run(self, query: str, max_steps: int = 12) -> Tuple[str, List[str]]:
+    def run(self, query: str):
         """
-        Run A2A from raw user query until final answer (to user).
-
-        Returns:
-          final_text, log_lines
+        Run a single user query through the A2A system.
         """
+        print("\n==============================")
+        print(f"USER QUERY: {query}")
+        print("==============================\n")
 
-        log: List[str] = []
-
-        # Initial message: user -> router
-        msg = A2AMessage(
+        # Initial message to RouterAgent
+        message = A2AMessage(
             sender="user",
             receiver="router",
-            role="user",
             content=query,
-            state={},
+            state={}
         )
 
-        for step in range(1, max_steps + 1):
+        steps = 0
+        max_steps = 20
 
-            # ---------------------------
-            # Logging this step
-            # ---------------------------
-            log.append(
-                f"[STEP {step}] {msg.sender} -> {msg.receiver} | content='{msg.content}' | state={msg.state}"
-            )
+        while steps < max_steps:
+            steps += 1
 
-            # ---------------------------
-            # Final answer?
-            # ---------------------------
-            if msg.receiver == "user" and msg.sender != "router":
-                # SupportAgent or fallback responded directly
-                return msg.content, log
+            print(f"[STEP {steps}] {message.sender} → {message.receiver}")
+            print(f"  Content: {message.content}")
+            print(f"  State: {message.state}\n")
 
-            # ---------------------------
-            # Scenario 2 special logic:
-            # Router → Data → support history fetch
-            # ---------------------------
-            state = msg.state
+            receiver = message.receiver
 
-            if (
-                state.get("router_should_fetch_history_via_data_agent")
-                and msg.sender == "router"
-                and msg.receiver == "customer_data"
-                and state.get("action") == "get_customer_history"
-            ):
-                # Router told coordinator to fetch history via MCP.
-                customer_id = state.get("customer_id")
-                history_response = self.mcp.call(
-                    tool="get_customer_history",
-                    arguments={"customer_id": customer_id},
-                )
+            # If message goes back to user → finished
+            if receiver == "user":
+                print("=== FINAL ANSWER ===")
+                print(message.content)
+                print("====================\n")
+                return message.content
 
-                # Inject into state
-                state["customer_history"] = history_response.get("result")
-                # Clear flag
-                state.pop("router_should_fetch_history_via_data_agent", None)
-
-                # Now send it to SupportAgent
-                msg = A2AMessage(
-                    sender="router",
-                    receiver="support",
-                    role="agent",
-                    content="[Coordinator] Injected billing history into state; handing to SupportAgent.",
-                    state=state,
-                )
-                continue
-
-            # ---------------------------
-            # Normal A2A message passing:
-            # find the next agent and call `handle()`
-            # ---------------------------
-            receiver = msg.receiver
+            # Safety check
             if receiver not in self.agents:
+                raise ValueError(f"Unknown receiver agent: {receiver}")
+
+            # Call the appropriate agent
+            agent = self.agents[receiver]
+            message = agent.handle(message)
+
+        raise RuntimeError("A2A exceeded maximum steps (possible infinite loop).")
+
+
+# -------------------------
+# Built-in scenarios
+# -------------------------
+
+def demo_scenarios():
+    coord = A2ACoordinator()
+
+    queries = [
+        "I need help with my account, customer ID 12345",
+        "I want to cancel my subscription but I'm having billing issues",
+        "What's the status of all high-priority tickets for premium customers?",
+        "Get customer information for ID 5",
+        "I'm customer 12345 and need help upgrading my account",
+        "Show me all active customers who have open tickets",
+        "I've been charged twice, please refund immediately!",
+        "Update my email to new@email.com and show my ticket history"
+    ]
+
+    for q in queries:
+        coord.run(q)
+
+
+# When running via: python -m agents.coordinator
+if __name__ == "__main__":
+    demo_scenarios()
