@@ -1,0 +1,14 @@
+{
+  "mcp_server": {
+    "description": "Local MCP-style server for customer support DB",
+    "transport": "in_process",
+    "db_path": "support.db",
+    "tools": [
+      "get_customer",
+      "list_customers",
+      "update_customer",
+      "create_ticket",
+      "get_customer_history"
+    ]
+  }
+}
