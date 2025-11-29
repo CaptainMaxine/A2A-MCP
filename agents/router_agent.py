@@ -1,62 +1,82 @@
 import json
-from typing import Dict, List
+from typing import Dict
+from openai import OpenAI
+import os
 
 from .base_agent import A2AMessage, BaseAgent
 
 
 class RouterAgent(BaseAgent):
     """
-    Router / Orchestrator.
+    Router / Orchestrator agent.
     Responsibilities:
-    - Classify user intent using an LLM
+    - Use LLM to classify user intent
     - Determine scenario
-    - Route messages to CustomerDataAgent and SupportAgent
-    - Aggregate state and return final message
+    - Route messages to agents
+    - Aggregate state
     """
 
     def __init__(self):
         super().__init__(name="router")
-        self.llm = self._make_llm()   # <-- IMPORTANT
+        self.llm = self._make_llm()   # <-- FIXED: now exists
 
     # ------------------------------------------------------
-    # 1. Intent Classification via LLM
+    # Build LLM client
+    # ------------------------------------------------------
+    def _make_llm(self):
+        client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+
+        def run(system_prompt: str, user_prompt: str) -> str:
+            resp = client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+            )
+            return resp.choices[0].message.content
+
+        return run
+
+    # ------------------------------------------------------
+    # Intent Classification
     # ------------------------------------------------------
     def classify_intent(self, user_query: str) -> Dict:
         system_prompt = (
-            "You are an intent classification model. "
-            "Extract intents from the query. "
-            "Return JSON with fields: intents[], customer_id, scenario."
+            "You are an intent classifier. "
+            "Given a user query, extract: intents[], customer_id, scenario.\n"
+            "Choose scenario from: simple_get, coordinated_upgrade, "
+            "open_tickets, refund_escalation, update_email_and_history.\n"
+            "Return ONLY valid JSON."
         )
 
-        user_prompt = f"User query: {user_query}\n\nExtract intents."
+        user_prompt = f"User query: {user_query}\nExtract JSON."
 
         raw = self.llm(system_prompt, user_prompt)
 
-        # Safe JSON parse
         try:
-            data = json.loads(raw)
+            parsed = json.loads(raw)
         except:
-            data = {"intents": ["unknown"], "scenario": "unknown"}
+            parsed = {"intents": ["unknown"], "scenario": "unknown", "customer_id": None}
 
-        return data
+        return parsed
 
     # ------------------------------------------------------
-    # 2. Route messages between agents
+    # Router logic
     # ------------------------------------------------------
     def handle(self, message: A2AMessage) -> A2AMessage:
         state = dict(message.state)
 
-        # If this is the first turn
+        # -------- FIRST TURN: From user ----------
         if message.sender == "user":
             intents = self.classify_intent(message.content)
             state.update(intents)
             state["original_query"] = message.content
 
-            # extract scenario for routing
-            scenario = intents.get("scenario")
+            customer_id = intents.get("customer_id")
 
-            # Route to data agent first if customer_id is needed
-            if "customer_id" in intents and intents["customer_id"]:
+            # Need customer data first → send to CustomerDataAgent
+            if customer_id:
                 return A2AMessage(
                     sender="router",
                     receiver="customer_data",
@@ -65,7 +85,7 @@ class RouterAgent(BaseAgent):
                     state=state,
                 )
 
-            # If no customer needed → go directly to support
+            # No customer ID → go directly to SupportAgent
             return A2AMessage(
                 sender="router",
                 receiver="support",
@@ -74,13 +94,9 @@ class RouterAgent(BaseAgent):
                 state=state,
             )
 
-        # ------------------------------------------------------
-        # If message comes back from CustomerDataAgent
-        # ------------------------------------------------------
+        # -------- RETURN: From CustomerDataAgent ----------
         if message.sender == "customer_data":
             state.update(message.state)
-
-            # After getting data → always go to support
             return A2AMessage(
                 sender="router",
                 receiver="support",
@@ -89,10 +105,7 @@ class RouterAgent(BaseAgent):
                 state=state,
             )
 
-        # ------------------------------------------------------
-        # If message comes back from SupportAgent
-        # Final answer — return to user
-        # ------------------------------------------------------
+        # -------- FINAL RETURN: From SupportAgent ----------
         if message.sender == "support":
             return A2AMessage(
                 sender="router",
@@ -102,11 +115,11 @@ class RouterAgent(BaseAgent):
                 state=state,
             )
 
-        # Fallback
+        # fallback
         return A2AMessage(
             sender="router",
             receiver="user",
             role="system",
-            content="[RouterAgent] Unable to route message.",
+            content="[Router] Could not route message.",
             state=state,
         )
