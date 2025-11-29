@@ -7,19 +7,21 @@ from .mcp_client import MCPClient
 
 class CustomerDataAgent(BaseAgent):
     """
-    Data-specialist agent responsible for:
-    - Fetching customer records
-    - Updating customer data
-    - Listing premium/active customers
-    - Retrieving ticket history
-    - Returning structured information in state for Router & SupportAgent
+    Deterministic data-specialist agent for MCP-backed database access.
 
-    This agent does NOT use an LLM.
-    It is a deterministic DB specialist.
+    Responsibilities:
+    - Fetch customer records
+    - Update customer data
+    - List premium/active customers
+    - Retrieve ticket history
+    - Return structured information back to RouterAgent
+
+    IMPORTANT:
+    This agent *does not* use an LLM. It must be deterministic.
     """
 
     def __init__(self, mcp_client: MCPClient):
-        super().__init__(name="data")
+        super().__init__(name="customer_data")
         self.mcp = mcp_client
 
     # ------------------------------------------------------
@@ -30,18 +32,16 @@ class CustomerDataAgent(BaseAgent):
         scenario = state.get("scenario")
         content = message.content
 
-        print(f"[DataAgent] Received from router: {scenario} / {content}")
+        print(f"[CustomerDataAgent] Received: scenario={scenario}, content={content}")
 
         # ------------------------------------------------------
-        # 1) Lookup customer by ID
+        # CASE 1 — Customer lookup
+        # Router requires customer_id → DataAgent retrieves it
         # ------------------------------------------------------
-        if content == "lookup_customer":
-            cid = state.get("customer_id")
-            if cid:
-                customer = self.mcp.get_customer(cid)
-                state["customer"] = customer
-            else:
-                state["customer"] = None
+        if "customer_id" in state and state["customer_id"] is not None:
+            cid = state["customer_id"]
+            customer = self.mcp.get_customer(cid)
+            state["customer"] = customer
 
             return A2AMessage(
                 sender=self.name,
@@ -52,27 +52,10 @@ class CustomerDataAgent(BaseAgent):
             )
 
         # ------------------------------------------------------
-        # 2) List premium customers (Scenario 3)
+        # CASE 2 — Scenario: list active customers
+        # Used for query: "Show me all active customers who have open tickets"
         # ------------------------------------------------------
-        if content == "list_premium_customers":
-            # Premium = status = "active" AND plan = premium (your DB doesn't have plan, so approximate)
-            # Here we treat "active" as your original logic.
-            customers = self.mcp.list_customers(status="active")
-            # You can add filtering logic if your DB had a premium flag.
-            state["premium_customers"] = customers
-
-            return A2AMessage(
-                sender=self.name,
-                receiver="router",
-                role="agent",
-                content="premium_customers_ready",
-                state=state,
-            )
-
-        # ------------------------------------------------------
-        # 3) List active customers (Scenario: active_customers_with_open_tickets)
-        # ------------------------------------------------------
-        if content == "list_active_customers":
+        if scenario == "active_customers_with_open_tickets":
             customers = self.mcp.list_customers(status="active")
             state["active_customers"] = customers
 
@@ -85,9 +68,27 @@ class CustomerDataAgent(BaseAgent):
             )
 
         # ------------------------------------------------------
-        # 4) Fetch ticket history for a customer
+        # CASE 3 — Scenario: list premium customers
+        # Used for scenario_3: high-priority tickets for premium customers
         # ------------------------------------------------------
-        if content == "get_history":
+        if scenario == "high_priority_for_premium":
+            # Your DB has no "premium" flag → we approximate with status="active"
+            customers = self.mcp.list_customers(status="active")
+            state["premium_customers"] = customers
+
+            return A2AMessage(
+                sender=self.name,
+                receiver="router",
+                role="agent",
+                content="premium_customers_ready",
+                state=state,
+            )
+
+        # ------------------------------------------------------
+        # CASE 4 — Scenario: get history for explicit customer
+        # Used in: "update email and show my ticket history"
+        # ------------------------------------------------------
+        if scenario == "update_email_and_history":
             cid = state.get("customer_id")
             if cid:
                 history = self.mcp.get_customer_history(cid)
@@ -104,9 +105,9 @@ class CustomerDataAgent(BaseAgent):
             )
 
         # ------------------------------------------------------
-        # 5) Default fallback (should not happen)
+        # DEFAULT: No operation
         # ------------------------------------------------------
-        print("[DataAgent] Warning: Unrecognized command from RouterAgent.")
+        print("[CustomerDataAgent] Warning: no matching scenario. Returning noop.")
         return A2AMessage(
             sender=self.name,
             receiver="router",
