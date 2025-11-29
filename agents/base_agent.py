@@ -1,6 +1,7 @@
 # agents/base_agent.py
 from dataclasses import dataclass, field
 from typing import Any, Dict
+from .llm_utils import generate_text
 
 @dataclass
 class A2AMessage:
