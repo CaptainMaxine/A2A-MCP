@@ -1,231 +1,112 @@
-# agents/router_agent.py
-import re
-from typing import Dict, List, Any
+import json
+from typing import Dict, List
 
-from .base_agent import BaseAgent, A2AMessage
+from .base_agent import A2AMessage, BaseAgent
 
 
 class RouterAgent(BaseAgent):
     """
-    The RouterAgent is the orchestrator of the multi-agent system.
-
-    Upgraded version:
-    - Uses LLM to classify user intent
-    - Maps LLM intent → scenario
-    - Routes to DataAgent or SupportAgent
-    - Stores structured state for multi-step workflows
+    Router / Orchestrator.
+    Responsibilities:
+    - Classify user intent using an LLM
+    - Determine scenario
+    - Route messages to CustomerDataAgent and SupportAgent
+    - Aggregate state and return final message
     """
 
     def __init__(self):
         super().__init__(name="router")
+        self.llm = self._make_llm()   # <-- IMPORTANT
 
     # ------------------------------------------------------
-    # 1. LLM-based intent classification
+    # 1. Intent Classification via LLM
     # ------------------------------------------------------
-    def classify_intent(self, user_query: str) -> Dict[str, Any]:
-        """
-        Use an LLM to classify the user's request into:
-        - scenario
-        - intents (list)
-        - extracted fields (e.g., customer_id, email)
-        """
-
+    def classify_intent(self, user_query: str) -> Dict:
         system_prompt = (
-            "You are an intent classification system for a customer service AI. "
-            "You must return a JSON dictionary with keys:\n"
-            "- scenario: one of ['scenario_1_task_allocation', 'simple_get_and_support', "
-            "'coordinated_upgrade', 'cancel_and_billing', "
-            "'high_priority_for_premium', 'active_customers_with_open_tickets', "
-            "'refund_escalation', 'update_email_and_history']\n"
-            "- intents: list of atomic intents\n"
-            "- customer_id: integer or null\n"
-            "- email: string or null\n"
-            "- issue: string or null\n\n"
-            "Do not include explanations. Only valid JSON."
+            "You are an intent classification model. "
+            "Extract intents from the query. "
+            "Return JSON with fields: intents[], customer_id, scenario."
         )
 
         user_prompt = f"User query: {user_query}\n\nExtract intents."
 
         raw = self.llm(system_prompt, user_prompt)
 
-        # Parse JSON safely
-        import json
+        # Safe JSON parse
         try:
-            result = json.loads(raw)
-            if not isinstance(result, dict):
-                raise ValueError
-        except Exception:
-            # fallback minimal structure
-            result = {
-                "scenario": "simple_get_and_support",
-                "intents": [],
-                "customer_id": None,
-                "email": None,
-                "issue": user_query,
-            }
+            data = json.loads(raw)
+        except:
+            data = {"intents": ["unknown"], "scenario": "unknown"}
 
-        return result
+        return data
 
     # ------------------------------------------------------
-    # 2. Extract customer ID with regex (LLM may miss)
-    # ------------------------------------------------------
-    def extract_customer_id(self, text: str) -> int:
-        m = re.search(r"\b(\d{3,6})\b", text)
-        return int(m.group(1)) if m else None
-
-    # ------------------------------------------------------
-    # 3. Handle message from user or agents
+    # 2. Route messages between agents
     # ------------------------------------------------------
     def handle(self, message: A2AMessage) -> A2AMessage:
-        sender = message.sender
-        content = message.content
         state = dict(message.state)
 
-        # User is talking
-        if sender == "user":
-            # Save original query
-            state["original_query"] = content
+        # If this is the first turn
+        if message.sender == "user":
+            intents = self.classify_intent(message.content)
+            state.update(intents)
+            state["original_query"] = message.content
 
-            # 1) LLM-based classification
-            result = self.classify_intent(content)
-            scenario = result.get("scenario")
-            intents = result.get("intents", [])
-            customer_id = result.get("customer_id")
-            email = result.get("email")
-            issue = result.get("issue") or content
+            # extract scenario for routing
+            scenario = intents.get("scenario")
 
-            # 2) Regex fallback for customer_id
-            if not customer_id:
-                customer_id = self.extract_customer_id(content)
-
-            state.update(
-                {
-                    "scenario": scenario,
-                    "intents": intents,
-                    "customer_id": customer_id,
-                    "email": email,
-                    "issue": issue,
-                }
-            )
-
-            # 3) Decide next agent
-            # Most scenarios need customer data first
-            if scenario in {
-                "scenario_1_task_allocation",
-                "coordinated_upgrade",
-                "cancel_and_billing",
-                "refund_escalation",
-                "update_email_and_history",
-                "simple_get_and_support",
-            }:
+            # Route to data agent first if customer_id is needed
+            if "customer_id" in intents and intents["customer_id"]:
                 return A2AMessage(
-                    sender=self.name,
-                    receiver="data",
-                    role="router",
-                    content="lookup_customer",
+                    sender="router",
+                    receiver="customer_data",
+                    role="agent",
+                    content=message.content,
                     state=state,
                 )
 
-            # Scenario 3: premium customers → need DataAgent to list
-            if scenario == "high_priority_for_premium":
-                return A2AMessage(
-                    sender=self.name,
-                    receiver="data",
-                    role="router",
-                    content="list_premium_customers",
-                    state=state,
-                )
-
-            # Active customers with open tickets
-            if scenario == "active_customers_with_open_tickets":
-                return A2AMessage(
-                    sender=self.name,
-                    receiver="data",
-                    role="router",
-                    content="list_active_customers",
-                    state=state,
-                )
-
-            # Fallback
+            # If no customer needed → go directly to support
             return A2AMessage(
-                sender=self.name,
+                sender="router",
                 receiver="support",
-                role="router",
-                content="general_support",
+                role="agent",
+                content=message.content,
                 state=state,
             )
 
         # ------------------------------------------------------
-        # Message from DataAgent
+        # If message comes back from CustomerDataAgent
         # ------------------------------------------------------
-        if sender == "data":
-            scenario = state.get("scenario")
+        if message.sender == "customer_data":
+            state.update(message.state)
 
-            # Typical flow: after lookup_customer, data agent sets customer
-            if scenario in {
-                "scenario_1_task_allocation",
-                "simple_get_and_support",
-                "coordinated_upgrade",
-                "refund_escalation",
-                "update_email_and_history",
-            }:
-                return A2AMessage(
-                    sender=self.name,
-                    receiver="support",
-                    role="router",
-                    content="support_handle",
-                    state=state,
-                )
-
-            # Negotiation (Scenario 2)
-            if scenario == "cancel_and_billing":
-                if state.get("support_needs_billing_context"):
-                    # Now we have billing data
-                    state["billing_context_ready"] = True
-                return A2AMessage(
-                    sender=self.name,
-                    receiver="support",
-                    role="router",
-                    content="support_handle",
-                    state=state,
-                )
-
-            # Multi-step premium ticket query
-            if scenario == "high_priority_for_premium":
-                return A2AMessage(
-                    sender=self.name,
-                    receiver="support",
-                    role="router",
-                    content="support_handle",
-                    state=state,
-                )
-
-            if scenario == "active_customers_with_open_tickets":
-                return A2AMessage(
-                    sender=self.name,
-                    receiver="support",
-                    role="router",
-                    content="support_handle",
-                    state=state,
-                )
-
-        # ------------------------------------------------------
-        # Message from SupportAgent → return to user
-        # ------------------------------------------------------
-        if sender == "support":
+            # After getting data → always go to support
             return A2AMessage(
-                sender=self.name,
-                receiver="user",
-                role="router",
-                content=content,
+                sender="router",
+                receiver="support",
+                role="agent",
+                content=message.content,
                 state=state,
             )
 
-        # Should never reach here
+        # ------------------------------------------------------
+        # If message comes back from SupportAgent
+        # Final answer — return to user
+        # ------------------------------------------------------
+        if message.sender == "support":
+            return A2AMessage(
+                sender="router",
+                receiver="user",
+                role="system",
+                content=message.content,
+                state=state,
+            )
+
+        # Fallback
         return A2AMessage(
-            sender=self.name,
+            sender="router",
             receiver="user",
-            role="router",
-            content="[RouterAgent] Unrecognized routing case.",
+            role="system",
+            content="[RouterAgent] Unable to route message.",
             state=state,
         )
