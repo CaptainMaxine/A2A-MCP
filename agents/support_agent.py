@@ -130,7 +130,11 @@ class SupportAgent(BaseAgent):
                     f"{cname} -> Ticket #{t['id']} [{t['status']}] {t['issue']}"
                 )
 
-            report = "\n".join(lines) or "No high-priority open tickets for premium customers."
+            report = (
+                "\n".join(lines)
+                if lines
+                else "No high-priority open tickets for premium customers."
+            )
             content = (
                 "[SupportAgent] Status of high-priority open tickets for premium customers:\n"
                 + report
@@ -154,7 +158,7 @@ class SupportAgent(BaseAgent):
                     f"{cname} -> Ticket #{t['id']} [{t['priority']}] {t['issue']}"
                 )
 
-            body = "\n".join(lines) or "No active customers with open tickets."
+            body = "\n".join(lines) if lines else "No active customers with open tickets."
             content = "[SupportAgent] Active customers with open tickets:\n" + body
 
         # Escalation: refund / charged twice
@@ -189,10 +193,7 @@ class SupportAgent(BaseAgent):
                 if customer
                 else "Email update may have failed (customer not found)."
             )
-            lines = [
-                self._format_ticket_line(t)
-                for t in history[:10]
-            ]
+            lines = [self._format_ticket_line(t) for t in history[:10]]
             tickets_text = "\n".join(lines) or "No previous tickets."
 
             content = (
@@ -200,18 +201,57 @@ class SupportAgent(BaseAgent):
                 f"Here is your recent ticket history:\n{tickets_text}"
             )
 
-        # Default / fall-back: generic support
+        # Default / fall-back
         else:
             content = (
                 "[SupportAgent] Generic support: I'm not sure which scenario applies. "
                 "Please provide your customer ID and a brief description of the issue."
             )
 
-        # Always send back to router
+        # ------------------------------------------------------
+        # NEW: Let LLM rephrase / polish the final message
+        # ------------------------------------------------------
+
+        original_query = state.get("original_query", message.content)
+        customer = state.get("customer")
+        history = state.get("customer_history", [])
+
+        context_lines = []
+
+        if customer:
+            context_lines.append(
+                f"Customer #{customer['id']} - {customer['name']} "
+                f"(status={customer['status']}, email={customer.get('email')})"
+            )
+
+        if history:
+            context_lines.append("Recent tickets:")
+            for t in history[:5]:
+                context_lines.append(
+                    f"- #{t['id']} [{t['priority']}] {t['issue']} (status={t['status']})"
+                )
+
+        context_block = "\n".join(context_lines) if context_lines else "No extra context."
+
+        system_prompt = (
+            "You are an experienced customer support agent. "
+            "Rewrite the draft reply into a polished, professional, "
+            "empathetic message. Do NOT invent new facts."
+        )
+
+        user_prompt = (
+            f"User query:\n{original_query}\n\n"
+            f"Context:\n{context_block}\n\n"
+            f"Draft reply:\n{content}\n\n"
+            "Please rewrite the draft into the final message."
+        )
+
+        final_content = self.llm(system_prompt, user_prompt)
+
         return A2AMessage(
             sender=self.name,
             receiver="router",
             role="agent",
-            content=content,
+            content=final_content,
             state=state,
         )
