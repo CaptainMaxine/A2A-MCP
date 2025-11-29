@@ -1,77 +1,116 @@
 # agents/customer_data_agent.py
-from typing import Any, Dict
+from typing import Dict, Any, List
 
-from .base_agent import A2AMessage, BaseAgent
+from .base_agent import BaseAgent, A2AMessage
 from .mcp_client import MCPClient
 
 
 class CustomerDataAgent(BaseAgent):
     """
-    Specialist for customer & ticket data.
+    Data-specialist agent responsible for:
+    - Fetching customer records
+    - Updating customer data
+    - Listing premium/active customers
+    - Retrieving ticket history
+    - Returning structured information in state for Router & SupportAgent
 
-    Responsibilities (per assignment):
-    - Access customer database via MCP
-    - Retrieve customer information
-    - Update customer records
-    - Handle data validation
+    This agent does NOT use an LLM.
+    It is a deterministic DB specialist.
     """
 
     def __init__(self, mcp_client: MCPClient):
-        super().__init__(name="customer_data")
+        super().__init__(name="data")
         self.mcp = mcp_client
 
+    # ------------------------------------------------------
+    # Main handler
+    # ------------------------------------------------------
     def handle(self, message: A2AMessage) -> A2AMessage:
-        state = dict(message.state)  # shallow copy
-        action = state.get("action")
+        state = dict(message.state)
+        scenario = state.get("scenario")
+        content = message.content
 
-        if action == "get_customer":
-            customer_id = state.get("customer_id")
-            customer = self.mcp.get_customer(customer_id)
-            state["customer"] = customer
+        print(f"[DataAgent] Received from router: {scenario} / {content}")
 
-            content = (
-                f"[CustomerDataAgent] Retrieved customer {customer_id}."
-                if customer
-                else f"[CustomerDataAgent] No customer found for id={customer_id}."
+        # ------------------------------------------------------
+        # 1) Lookup customer by ID
+        # ------------------------------------------------------
+        if content == "lookup_customer":
+            cid = state.get("customer_id")
+            if cid:
+                customer = self.mcp.get_customer(cid)
+                state["customer"] = customer
+            else:
+                state["customer"] = None
+
+            return A2AMessage(
+                sender=self.name,
+                receiver="router",
+                role="agent",
+                content="customer_context_ready",
+                state=state,
             )
 
-        elif action == "list_premium_customers":
-            # For demo, treat all 'active' customers as 'premium'.
-            customers = self.mcp.list_customers(status="active", limit=100)
+        # ------------------------------------------------------
+        # 2) List premium customers (Scenario 3)
+        # ------------------------------------------------------
+        if content == "list_premium_customers":
+            # Premium = status = "active" AND plan = premium (your DB doesn't have plan, so approximate)
+            # Here we treat "active" as your original logic.
+            customers = self.mcp.list_customers(status="active")
+            # You can add filtering logic if your DB had a premium flag.
             state["premium_customers"] = customers
-            state["premium_customer_ids"] = [c["id"] for c in customers]
-            content = f"[CustomerDataAgent] Found {len(customers)} premium (active) customers."
 
-        elif action == "get_active_customers_with_open_tickets":
-            # Data agent can return active customers; support agent will inspect tickets.
-            customers = self.mcp.list_customers(status="active", limit=200)
+            return A2AMessage(
+                sender=self.name,
+                receiver="router",
+                role="agent",
+                content="premium_customers_ready",
+                state=state,
+            )
+
+        # ------------------------------------------------------
+        # 3) List active customers (Scenario: active_customers_with_open_tickets)
+        # ------------------------------------------------------
+        if content == "list_active_customers":
+            customers = self.mcp.list_customers(status="active")
             state["active_customers"] = customers
-            state["active_customer_ids"] = [c["id"] for c in customers]
-            content = (
-                f"[CustomerDataAgent] Listed {len(customers)} active customers "
-                f"for open-ticket analysis."
+
+            return A2AMessage(
+                sender=self.name,
+                receiver="router",
+                role="agent",
+                content="active_customers_ready",
+                state=state,
             )
 
-        elif action == "update_customer_email":
-            customer_id = state.get("customer_id")
-            new_email = state.get("new_email")
-            updated = self.mcp.update_customer(customer_id, {"email": new_email})
-            state["updated_customer"] = updated
-            content = (
-                f"[CustomerDataAgent] Updated email to {new_email} for customer {customer_id}."
-                if updated
-                else f"[CustomerDataAgent] Failed to update customer {customer_id}."
+        # ------------------------------------------------------
+        # 4) Fetch ticket history for a customer
+        # ------------------------------------------------------
+        if content == "get_history":
+            cid = state.get("customer_id")
+            if cid:
+                history = self.mcp.get_customer_history(cid)
+                state["customer_history"] = history
+            else:
+                state["customer_history"] = []
+
+            return A2AMessage(
+                sender=self.name,
+                receiver="router",
+                role="agent",
+                content="history_ready",
+                state=state,
             )
 
-        else:
-            content = "[CustomerDataAgent] No recognized action; passing through."
-            # no state change
-
-        # Always reply to router
+        # ------------------------------------------------------
+        # 5) Default fallback (should not happen)
+        # ------------------------------------------------------
+        print("[DataAgent] Warning: Unrecognized command from RouterAgent.")
         return A2AMessage(
             sender=self.name,
             receiver="router",
             role="agent",
-            content=content,
+            content="data_agent_noop",
             state=state,
         )
